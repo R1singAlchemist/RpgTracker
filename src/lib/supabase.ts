@@ -107,3 +107,93 @@ export const combatAPI = {
     return !!data;
   }
 };
+
+// User and Character API functions
+export const userAPI = {
+  // Get user profile with character data
+  async getUserProfile(userId: string) {
+    const { data: profile, error: profileError } = await supabase
+      .from('user_profiles')
+      .select('*')
+      .eq('id', userId)
+      .single();
+
+    if (profileError) throw profileError;
+
+    const { data: character, error: characterError } = await supabase
+      .from('characters')
+      .select('*')
+      .eq('user_id', userId)
+      .single();
+
+    if (characterError) throw characterError;
+
+    return {
+      profile,
+      character
+    };
+  },
+
+  // Update user profile
+  async updateUserProfile(userId: string, updates: { display_name?: string }) {
+    const { data, error } = await supabase
+      .from('user_profiles')
+      .update(updates)
+      .eq('id', userId)
+      .select()
+      .single();
+
+    if (error) throw error;
+    return data;
+  },
+
+  // Update character data
+  async updateCharacter(userId: string, updates: {
+    name?: string;
+    level?: number;
+    experience?: number;
+    experience_to_next?: number;
+    class?: string;
+    appearance?: any;
+    stats?: any;
+    vitals?: any;
+    gold?: number;
+    skill_points?: number;
+  }) {
+    const { data, error } = await supabase
+      .from('characters')
+      .update(updates)
+      .eq('user_id', userId)
+      .select()
+      .single();
+
+    if (error) throw error;
+    return data;
+  },
+
+  // Create character (if not exists)
+  async createCharacter(userId: string, characterData?: Partial<{
+    name: string;
+    level: number;
+    experience: number;
+    experience_to_next: number;
+    class: string;
+    appearance: any;
+    stats: any;
+    vitals: any;
+    gold: number;
+    skill_points: number;
+  }>) {
+    const { data, error } = await supabase
+      .from('characters')
+      .insert({
+        user_id: userId,
+        ...characterData
+      })
+      .select()
+      .single();
+
+    if (error) throw error;
+    return data;
+  }
+};

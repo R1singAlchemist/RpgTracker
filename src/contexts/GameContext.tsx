@@ -1,15 +1,16 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { Quest, Item, Achievement, Friend } from '../types';
 import { useAuth } from './AuthContext';
+import { questAPI } from '../lib/questAPI';
 
 interface GameContextType {
   quests: Quest[];
   inventory: Item[];
   achievements: Achievement[];
   friends: Friend[];
-  addQuest: (quest: Omit<Quest, 'id' | 'createdAt' | 'isCompleted'>) => void;
-  completeQuest: (questId: string) => void;
-  deleteQuest: (questId: string) => void;
+  addQuest: (quest: Omit<Quest, 'id' | 'createdAt' | 'isCompleted'>) => Promise<void>;
+  completeQuest: (questId: string) => Promise<void>;
+  deleteQuest: (questId: string) => Promise<void>;
   addItem: (item: Item) => void;
   removeItem: (itemId: string, quantity?: number) => void;
   equipItem: (itemId: string) => void;
@@ -18,6 +19,7 @@ interface GameContextType {
   sellItem: (itemId: string) => boolean;
   addFriend: (friend: Friend) => void;
   removeFriend: (friendId: string) => void;
+  isLoading: boolean;
 }
 
 const GameContext = createContext<GameContextType | undefined>(undefined);
@@ -40,6 +42,7 @@ export const GameProvider: React.FC<GameProviderProps> = ({ children }) => {
   const [inventory, setInventory] = useState<Item[]>([]);
   const [achievements, setAchievements] = useState<Achievement[]>([]);
   const [friends, setFriends] = useState<Friend[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
 
   // Load game data when user changes
   useEffect(() => {
@@ -54,98 +57,124 @@ export const GameProvider: React.FC<GameProviderProps> = ({ children }) => {
     }
   }, [user]);
 
-  const loadGameData = () => {
+  const loadGameData = async () => {
     if (!user) return;
 
-    const savedQuests = localStorage.getItem(`quests_${user.id}`);
-    const savedInventory = localStorage.getItem(`inventory_${user.id}`);
-    const savedAchievements = localStorage.getItem(`achievements_${user.id}`);
-    const savedFriends = localStorage.getItem(`friends_${user.id}`);
+    try {
+      setIsLoading(true);
+      
+      // Load quests from Supabase
+      const userQuests = await questAPI.getUserQuests(user.id);
+      setQuests(userQuests);
 
-    if (savedQuests) setQuests(JSON.parse(savedQuests));
-    if (savedInventory) setInventory(JSON.parse(savedInventory));
-    if (savedAchievements) setAchievements(JSON.parse(savedAchievements));
-    if (savedFriends) setFriends(JSON.parse(savedFriends));
-  };
+      // Load other data from localStorage for now (will be migrated to Supabase later)
+      const savedInventory = localStorage.getItem(`inventory_${user.id}`);
+      const savedAchievements = localStorage.getItem(`achievements_${user.id}`);
+      const savedFriends = localStorage.getItem(`friends_${user.id}`);
 
-  const saveGameData = (data: { quests?: Quest[], inventory?: Item[], achievements?: Achievement[], friends?: Friend[] }) => {
-    if (!user) return;
-
-    if (data.quests) localStorage.setItem(`quests_${user.id}`, JSON.stringify(data.quests));
-    if (data.inventory) localStorage.setItem(`inventory_${user.id}`, JSON.stringify(data.inventory));
-    if (data.achievements) localStorage.setItem(`achievements_${user.id}`, JSON.stringify(data.achievements));
-    if (data.friends) localStorage.setItem(`friends_${user.id}`, JSON.stringify(data.friends));
-  };
-
-  const addQuest = (questData: Omit<Quest, 'id' | 'createdAt' | 'isCompleted'>) => {
-    const newQuest: Quest = {
-      ...questData,
-      id: Math.random().toString(36).substr(2, 9),
-      createdAt: new Date().toISOString(),
-      isCompleted: false,
-    };
-
-    const updatedQuests = [...quests, newQuest];
-    setQuests(updatedQuests);
-    saveGameData({ quests: updatedQuests });
-  };
-
-  const completeQuest = (questId: string) => {
-    const quest = quests.find(q => q.id === questId);
-    if (!quest || quest.isCompleted || !user) return;
-
-    // Update quest as completed
-    const updatedQuests = quests.map(q =>
-      q.id === questId
-        ? { ...q, isCompleted: true, completedAt: new Date().toISOString() }
-        : q
-    );
-    setQuests(updatedQuests);
-    saveGameData({ quests: updatedQuests });
-
-    // Award rewards
-    const newExp = user.character.experience + quest.rewards.experience;
-    const newGold = user.character.gold + quest.rewards.gold;
-    let newLevel = user.character.level;
-    let newExpToNext = user.character.experienceToNext;
-    let newSkillPoints = user.character.skillPoints + (quest.rewards.skillPoints || 0);
-    let newAvailablePoints = user.character.stats.availablePoints;
-
-    // Check for level up
-    if (newExp >= user.character.experienceToNext) {
-      newLevel++;
-      newExpToNext = newLevel * 100; // Simple formula
-      newAvailablePoints += 3; // 3 stat points per level
+      if (savedInventory) setInventory(JSON.parse(savedInventory));
+      if (savedAchievements) setAchievements(JSON.parse(savedAchievements));
+      if (savedFriends) setFriends(JSON.parse(savedFriends));
+    } catch (error) {
+      console.error('Error loading game data:', error);
+    } finally {
+      setIsLoading(false);
     }
+  };
 
-    // Update character
-    updateUser({
-      character: {
-        ...user.character,
-        experience: newExp,
-        experienceToNext: newExpToNext,
-        level: newLevel,
-        gold: newGold,
-        skillPoints: newSkillPoints,
-        stats: {
-          ...user.character.stats,
-          availablePoints: newAvailablePoints,
+  const saveInventoryData = (data: Item[]) => {
+    if (!user) return;
+    localStorage.setItem(`inventory_${user.id}`, JSON.stringify(data));
+  };
+
+  const saveAchievementsData = (data: Achievement[]) => {
+    if (!user) return;
+    localStorage.setItem(`achievements_${user.id}`, JSON.stringify(data));
+  };
+
+  const saveFriendsData = (data: Friend[]) => {
+    if (!user) return;
+    localStorage.setItem(`friends_${user.id}`, JSON.stringify(data));
+  };
+
+  const addQuest = async (questData: Omit<Quest, 'id' | 'createdAt' | 'isCompleted'>) => {
+    if (!user) return;
+
+    try {
+      const newQuest = await questAPI.createQuest(user.id, questData);
+      setQuests(prev => [newQuest, ...prev]);
+    } catch (error) {
+      console.error('Error adding quest:', error);
+      throw error;
+    }
+  };
+
+  const completeQuest = async (questId: string) => {
+    if (!user) return;
+
+    try {
+      const quest = quests.find(q => q.id === questId);
+      if (!quest || quest.isCompleted) return;
+
+      // Complete quest in database
+      const completedQuest = await questAPI.completeQuest(questId);
+      
+      // Update local state
+      setQuests(prev => prev.map(q => q.id === questId ? completedQuest : q));
+
+      // Award rewards
+      const newExp = user.character.experience + quest.rewards.experience;
+      const newGold = user.character.gold + quest.rewards.gold;
+      let newLevel = user.character.level;
+      let newExpToNext = user.character.experienceToNext;
+      let newSkillPoints = user.character.skillPoints + (quest.rewards.skillPoints || 0);
+      let newAvailablePoints = user.character.stats.availablePoints;
+
+      // Check for level up
+      if (newExp >= user.character.experienceToNext) {
+        newLevel++;
+        newExpToNext = newLevel * 100; // Simple formula
+        newAvailablePoints += 3; // 3 stat points per level
+      }
+
+      // Update character
+      await updateUser({
+        character: {
+          ...user.character,
+          experience: newExp,
+          experienceToNext: newExpToNext,
+          level: newLevel,
+          gold: newGold,
+          skillPoints: newSkillPoints,
+          stats: {
+            ...user.character.stats,
+            availablePoints: newAvailablePoints,
+          },
         },
-      },
-    });
+      });
 
-    // Add reward items to inventory
-    if (quest.rewards.items) {
-      const newItems = [...inventory, ...quest.rewards.items];
-      setInventory(newItems);
-      saveGameData({ inventory: newItems });
+      // Add reward items to inventory
+      if (quest.rewards.items) {
+        const newItems = [...inventory, ...quest.rewards.items];
+        setInventory(newItems);
+        saveInventoryData(newItems);
+      }
+    } catch (error) {
+      console.error('Error completing quest:', error);
+      throw error;
     }
   };
 
-  const deleteQuest = (questId: string) => {
-    const updatedQuests = quests.filter(q => q.id !== questId);
-    setQuests(updatedQuests);
-    saveGameData({ quests: updatedQuests });
+  const deleteQuest = async (questId: string) => {
+    if (!user) return;
+
+    try {
+      await questAPI.deleteQuest(questId);
+      setQuests(prev => prev.filter(q => q.id !== questId));
+    } catch (error) {
+      console.error('Error deleting quest:', error);
+      throw error;
+    }
   };
 
   const addItem = (item: Item) => {
@@ -164,7 +193,7 @@ export const GameProvider: React.FC<GameProviderProps> = ({ children }) => {
     }
 
     setInventory(updatedInventory);
-    saveGameData({ inventory: updatedInventory });
+    saveInventoryData(updatedInventory);
   };
 
   const removeItem = (itemId: string, quantity = 1) => {
@@ -181,7 +210,7 @@ export const GameProvider: React.FC<GameProviderProps> = ({ children }) => {
     }, [] as Item[]);
 
     setInventory(updatedInventory);
-    saveGameData({ inventory: updatedInventory });
+    saveInventoryData(updatedInventory);
   };
 
   const equipItem = (itemId: string) => {
@@ -189,7 +218,7 @@ export const GameProvider: React.FC<GameProviderProps> = ({ children }) => {
       item.id === itemId ? { ...item, isEquipped: true } : item
     );
     setInventory(updatedInventory);
-    saveGameData({ inventory: updatedInventory });
+    saveInventoryData(updatedInventory);
   };
 
   const unequipItem = (itemId: string) => {
@@ -197,7 +226,7 @@ export const GameProvider: React.FC<GameProviderProps> = ({ children }) => {
       item.id === itemId ? { ...item, isEquipped: false } : item
     );
     setInventory(updatedInventory);
-    saveGameData({ inventory: updatedInventory });
+    saveInventoryData(updatedInventory);
   };
 
   const buyItem = (item: Item): boolean => {
@@ -237,13 +266,13 @@ export const GameProvider: React.FC<GameProviderProps> = ({ children }) => {
   const addFriend = (friend: Friend) => {
     const updatedFriends = [...friends, friend];
     setFriends(updatedFriends);
-    saveGameData({ friends: updatedFriends });
+    saveFriendsData(updatedFriends);
   };
 
   const removeFriend = (friendId: string) => {
     const updatedFriends = friends.filter(f => f.id !== friendId);
     setFriends(updatedFriends);
-    saveGameData({ friends: updatedFriends });
+    saveFriendsData(updatedFriends);
   };
 
   const value = {
@@ -262,6 +291,7 @@ export const GameProvider: React.FC<GameProviderProps> = ({ children }) => {
     sellItem,
     addFriend,
     removeFriend,
+    isLoading,
   };
 
   return <GameContext.Provider value={value}>{children}</GameContext.Provider>;

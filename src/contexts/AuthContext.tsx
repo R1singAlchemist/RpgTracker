@@ -1,12 +1,14 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import { User as SupabaseUser } from '@supabase/supabase-js';
+import { supabase, userAPI } from '../lib/supabase';
 import { User } from '../types';
 
 interface AuthContextType {
   user: User | null;
   login: (email: string, password: string) => Promise<boolean>;
   register: (email: string, password: string) => Promise<boolean>;
-  logout: () => void;
-  updateUser: (userData: Partial<User>) => void;
+  logout: () => Promise<void>;
+  updateUser: (userData: Partial<User>) => Promise<void>;
   isLoading: boolean;
 }
 
@@ -29,32 +31,75 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    const savedUser = localStorage.getItem('lifequest_user');
-    if (savedUser) {
-      setUser(JSON.parse(savedUser));
-    }
-    setIsLoading(false);
+    // Get initial session
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session?.user) {
+        loadUserData(session.user);
+      } else {
+        setIsLoading(false);
+      }
+    });
+
+    // Listen for auth changes
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (session?.user) {
+        await loadUserData(session.user);
+      } else {
+        setUser(null);
+        setIsLoading(false);
+      }
+    });
+
+    return () => subscription.unsubscribe();
   }, []);
+
+  const loadUserData = async (supabaseUser: SupabaseUser) => {
+    try {
+      setIsLoading(true);
+      const { profile, character } = await userAPI.getUserProfile(supabaseUser.id);
+      
+      const userData: User = {
+        id: supabaseUser.id,
+        email: supabaseUser.email!,
+        displayName: profile.display_name || supabaseUser.email!.split('@')[0],
+        registrationDate: profile.created_at,
+        character: {
+          id: character.id,
+          name: character.name,
+          level: character.level,
+          experience: character.experience,
+          experienceToNext: character.experience_to_next,
+          class: character.class,
+          appearance: character.appearance,
+          stats: character.stats,
+          vitals: character.vitals,
+          gold: character.gold,
+          skillPoints: character.skill_points,
+        },
+      };
+
+      setUser(userData);
+    } catch (error) {
+      console.error('Error loading user data:', error);
+      // If there's an error loading user data, sign out
+      await supabase.auth.signOut();
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   const login = async (email: string, password: string): Promise<boolean> => {
     try {
-      // Simulate API call
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      
-      // For demo purposes, create a user or use existing one
-      let userData = localStorage.getItem(`user_${email}`);
-      if (!userData) {
-        return false; // User doesn't exist
+      const { error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
+
+      if (error) {
+        console.error('Login error:', error);
+        return false;
       }
 
-      const parsedUser = JSON.parse(userData);
-      if (parsedUser.password !== password) {
-        return false; // Wrong password
-      }
-
-      const { password: _, ...userWithoutPassword } = parsedUser;
-      setUser(userWithoutPassword);
-      localStorage.setItem('lifequest_user', JSON.stringify(userWithoutPassword));
       return true;
     } catch (error) {
       console.error('Login error:', error);
@@ -64,58 +109,21 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
 
   const register = async (email: string, password: string): Promise<boolean> => {
     try {
-      // Simulate API call
-      await new Promise(resolve => setTimeout(resolve, 1000));
-
-      // Check if user already exists
-      const existingUser = localStorage.getItem(`user_${email}`);
-      if (existingUser) {
-        return false; // User already exists
-      }
-
-      const newUser: User & { password: string } = {
-        id: Math.random().toString(36).substr(2, 9),
+      const { error } = await supabase.auth.signUp({
         email,
         password,
-        displayName: email.split('@')[0],
-        registrationDate: new Date().toISOString(),
-        character: {
-          id: Math.random().toString(36).substr(2, 9),
-          name: '',
-          level: 1,
-          experience: 0,
-          experienceToNext: 100,
-          class: 'Novice',
-          appearance: {
-            face: 0,
-            hairstyle: 0,
-            hairColor: '#8B4513',
-          },
-          stats: {
-            strength: 5,
-            dexterity: 5,
-            intelligence: 5,
-            availablePoints: 0,
-          },
-          vitals: {
-            currentHP: 100,
-            maxHP: 100,
-            currentMP: 50,
-            maxMP: 50,
-          },
-          gold: 100,
-          skillPoints: 0,
-        },
-      };
+        options: {
+          data: {
+            display_name: email.split('@')[0]
+          }
+        }
+      });
 
-      // Save user with password for authentication
-      localStorage.setItem(`user_${email}`, JSON.stringify(newUser));
-      
-      // Save user without password for app state
-      const { password: _, ...userWithoutPassword } = newUser;
-      setUser(userWithoutPassword);
-      localStorage.setItem('lifequest_user', JSON.stringify(userWithoutPassword));
-      
+      if (error) {
+        console.error('Registration error:', error);
+        return false;
+      }
+
       return true;
     } catch (error) {
       console.error('Registration error:', error);
@@ -123,23 +131,55 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     }
   };
 
-  const logout = () => {
-    setUser(null);
-    localStorage.removeItem('lifequest_user');
+  const logout = async () => {
+    try {
+      await supabase.auth.signOut();
+      setUser(null);
+    } catch (error) {
+      console.error('Logout error:', error);
+    }
   };
 
-  const updateUser = (userData: Partial<User>) => {
-    if (user) {
-      const updatedUser = { ...user, ...userData };
-      setUser(updatedUser);
-      localStorage.setItem('lifequest_user', JSON.stringify(updatedUser));
-      
-      // Also update the authenticated user data
-      const storedAuthUser = localStorage.getItem(`user_${user.email}`);
-      if (storedAuthUser) {
-        const authUser = JSON.parse(storedAuthUser);
-        localStorage.setItem(`user_${user.email}`, JSON.stringify({ ...authUser, ...userData }));
+  const updateUser = async (userData: Partial<User>) => {
+    if (!user) return;
+
+    try {
+      // Update profile if display name changed
+      if (userData.displayName && userData.displayName !== user.displayName) {
+        await userAPI.updateUserProfile(user.id, {
+          display_name: userData.displayName
+        });
       }
+
+      // Update character if character data changed
+      if (userData.character) {
+        const characterUpdates: any = {};
+        
+        if (userData.character.name !== undefined) characterUpdates.name = userData.character.name;
+        if (userData.character.level !== undefined) characterUpdates.level = userData.character.level;
+        if (userData.character.experience !== undefined) characterUpdates.experience = userData.character.experience;
+        if (userData.character.experienceToNext !== undefined) characterUpdates.experience_to_next = userData.character.experienceToNext;
+        if (userData.character.class !== undefined) characterUpdates.class = userData.character.class;
+        if (userData.character.appearance !== undefined) characterUpdates.appearance = userData.character.appearance;
+        if (userData.character.stats !== undefined) characterUpdates.stats = userData.character.stats;
+        if (userData.character.vitals !== undefined) characterUpdates.vitals = userData.character.vitals;
+        if (userData.character.gold !== undefined) characterUpdates.gold = userData.character.gold;
+        if (userData.character.skillPoints !== undefined) characterUpdates.skill_points = userData.character.skillPoints;
+
+        if (Object.keys(characterUpdates).length > 0) {
+          await userAPI.updateCharacter(user.id, characterUpdates);
+        }
+      }
+
+      // Update local state
+      const updatedUser = { ...user, ...userData };
+      if (userData.character) {
+        updatedUser.character = { ...user.character, ...userData.character };
+      }
+      setUser(updatedUser);
+    } catch (error) {
+      console.error('Error updating user:', error);
+      throw error;
     }
   };
 
